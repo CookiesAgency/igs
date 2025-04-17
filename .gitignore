@@ -172,3 +172,16 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# IGS specific
+output/
+playwright_sessions/
+user-data/
+.auth/
+start.sh
+*.DS_Store
+
+# Cartelle personali di backup
+data/
+Backup*/
+
