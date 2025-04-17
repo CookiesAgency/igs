@@ -1,138 +1,288 @@
-# scraper.py
-
 import os
 import json
-import asyncio
+import pandas as pd
+import time
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+import requests
 from datetime import datetime
-from playwright.async_api import async_playwright
 
-async def scrape_posts_by_url(PROFILE, PROFILE_URL, NUM_POSTS):
-    BASE_DIR = f"data/{PROFILE}"
-    os.makedirs(BASE_DIR, exist_ok=True)
-    USER_DATA_DIR = "./user-data"
+async def scrape_posts_by_url(profile_name, profile_url, num_posts, session_name="IGS_profile"):
+    output_dir = f"output/{profile_name}"
+    video_dir = os.path.join(output_dir, "videos")
+    os.makedirs(video_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch_persistent_context(
-            USER_DATA_DIR,
-            headless=False,
-            viewport={"width": 1200, "height": 1500},
-            args=["--disable-blink-features=AutomationControlled"]
-        )
+        browser = await p.chromium.launch(channel="chrome", headless=False, args=["--autoplay-policy=no-user-gesture-required"])
 
-        page = browser.pages[0] if browser.pages else await browser.new_page()
+        # Persistente sessione utente (salva cookies e login)
+        user_data_dir = os.path.join(".auth", session_name)
+        os.makedirs(user_data_dir, exist_ok=True)
 
-        # Stealth script
-        await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-        await page.add_init_script("window.navigator.chrome = { runtime: {} };")
-        await page.add_init_script("Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });")
-        await page.add_init_script("Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });")
+        state_path = os.path.join(user_data_dir, "state.json")
 
-        print(f"🌐 Apro il profilo: {PROFILE_URL}")
-        await page.goto(PROFILE_URL)
-        await asyncio.sleep(3)
+        # Primo lancio: login manuale, salvataggio stato
+        if not os.path.exists(state_path):
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto("https://www.instagram.com/accounts/login/")
+            print("⏳ Fai login su Instagram, poi premi invio nel terminale...")
+            input()
+            await context.storage_state(path=state_path)
+            await context.close()
 
-        print("🔄 Scroll per caricare i post...")
-        for _ in range(8):
-            await page.mouse.wheel(0, 3000)
-            await asyncio.sleep(1.2)
+        # Riutilizzo sessione salvata
+        context = await browser.new_context(storage_state=state_path)
+        page = await context.new_page()
 
-        print("🔍 Estrazione link post...")
-        links = await page.locator("a[href*='/p/'], a[href*='/reel/']").evaluate_all("els => els.map(e => e.href)")
-        POST_URLS = list(dict.fromkeys(links))[:NUM_POSTS]
-        print(f"✅ Trovati {len(POST_URLS)} link da analizzare.")
+        await page.goto(profile_url)
+        await page.wait_for_timeout(3000)
 
-        for idx, post_url in enumerate(POST_URLS):
-            video_error = False
-            print(f"➡️ Apro il post {idx+1}: {post_url}")
-            await page.goto(post_url)
-            await asyncio.sleep(3)
+        try:
+            follower_element = await page.query_selector("header li:nth-child(2) span span")
+            followers_text = await follower_element.inner_text() if follower_element else "0"
+            if "k" in followers_text.lower():
+                followers = int(float(followers_text.lower().replace("k", "").replace(",", ".")) * 1000)
+            elif "m" in followers_text.lower():
+                followers = int(float(followers_text.lower().replace("m", "").replace(",", ".")) * 1000000)
+            else:
+                followers = int(followers_text.replace(".", "").replace(",", ""))
+        except:
+            followers = 0
 
-            # Prova a interagire con il player video
+        try:
+            postcount_element = await page.query_selector("header li:nth-child(1) span span")
+            posts_total_text = await postcount_element.inner_text() if postcount_element else "0"
+            total_posts = int(posts_total_text.replace(".", "").replace(",", ""))
+        except:
+            total_posts = 0
+
+        post_links = []
+        seen = set()
+        while len(post_links) < num_posts:
+            anchors = await page.query_selector_all("a")
+            for a in anchors:
+                href = await a.get_attribute("href")
+                if href and ("/p/" in href or "/reel/" in href) and href not in seen:
+                    seen.add(href)
+                    post_links.append("https://www.instagram.com" + href)
+                if len(post_links) >= num_posts:
+                    break
+            await page.mouse.wheel(0, 8000)
+            await page.wait_for_timeout(500)
+
+        post_links = post_links[:num_posts]
+
+        posts_data = []
+        post_page = await context.new_page()
+
+        for i, link in enumerate(post_links):
+            video_path = os.path.join(video_dir, f"post_{i+1}.mp4")  # evita duplicati
             try:
-                video_player = page.locator("video").first
-                if await video_player.count() > 0:
-                    await video_player.click()
-                    await asyncio.sleep(1)
-            except:
-                video_error = True
-
-            date_str = "unknown"
-            try:
-                date_element = page.locator("time").first
-                if await date_element.count() > 0:
-                    date_str = await date_element.get_attribute("datetime")
-            except:
-                pass
-
-            caption_element = page.locator(".x1lliihq .x1k6rc7s").first
-            caption = await caption_element.inner_text() if await caption_element.count() > 0 else "No caption"
-
-            try:
-                likes_element = page.locator("xpath=(//span[contains(text(),'Piace a') or contains(text(),'likes') or contains(text(),'visualizzazioni') or contains(text(),'views')]/preceding-sibling::span)[1]")
-                if await likes_element.count() > 0:
-                    likes = await likes_element.inner_text()
-                else:
-                    og_desc = await page.locator("meta[property='og:description']").get_attribute("content")
-                    if og_desc:
-                        import re
-                        match = re.search(r"(\\d+) likes", og_desc)
-                        likes = match.group(1) if match else "0"
+                start_time = time.time()
+                await post_page.goto(link, timeout=8000)
+                try:
+                    await post_page.wait_for_selector("article", timeout=4000)
+                except PlaywrightTimeout:
+                    if "/reel/" in link:
+                        print("ℹ️ Reel senza <article>, continuo comunque.")
                     else:
-                        likes = "0"
-            except:
-                likes = "0"
+                        raise
+                await post_page.wait_for_timeout(100)
+                elapsed_time = time.time() - start_time
+                print(f"⏱️ Tempo apertura post {i+1}: {elapsed_time:.2f} sec")
 
-            comments = "0"
-            try:
-                comments_element = await page.query_selector_all("ul ul")
-                comments = str(len(comments_element))
-            except:
-                pass
+                # Caption
+                t1 = time.time()
+                try:
+                    caption = await post_page.inner_text("article header + div span")
+                except:
+                    caption = ""
+                print(f"⏱️ Tempo per caption: {time.time() - t1:.2f}s")
 
-            tipo = "reel" if "/reel/" in post_url else "post"
+                # Testo principale (header post)
+                t1b = time.time()
+                try:
+                    post_text = await post_page.inner_text("h1")
+                except:
+                    post_text = ""
+                print(f"⏱️ Tempo per testo post: {time.time() - t1b:.2f}s")
 
-            folder = os.path.join(BASE_DIR, f"post_{idx+1}")
-            os.makedirs(folder, exist_ok=True)
-            screenshot_path = os.path.join(folder, "screenshot.jpg")
-            await page.screenshot(path=screenshot_path)
+                # Data di pubblicazione
+                t1c = time.time()
+                try:
+                    timestamp_element = await post_page.query_selector("time")
+                    post_date = await timestamp_element.get_attribute("datetime") if timestamp_element else ""
+                    if post_date:
+                        post_date = datetime.fromisoformat(post_date.replace("Z", "+00:00")).strftime("%d %b %Y")
+                except:
+                    post_date = ""
+                print(f"⏱️ Tempo per data: {time.time() - t1c:.2f}s")
 
-            metadata = {
-                "url": post_url,
-                "caption": caption,
-                "likes": likes,
-                "comments": comments,
-                "data_pubblicazione": date_str,
-                "screenshot": screenshot_path,
-                "note": "⚠️ Video non disponibile o bloccato" if video_error else "",
-                "tipo": tipo
-            }
+                # Likes
+                t2 = time.time()
+                likes = 0
+                try:
+                    # Cerca elemento contenente 'likes' (tipico nei reel)
+                    spans = await post_page.query_selector_all("span")
+                    for span in spans:
+                        text = await span.inner_text()
+                        if text and ('likes' in text.lower() or 'mi piace' in text.lower()):
+                            digits = ''.join(filter(str.isdigit, text))
+                            if digits:
+                                likes = int(digits)
+                                break
+                except:
+                    likes = 0
+                print(f"⏱️ Tempo per like: {time.time() - t2:.2f}s")
 
-            with open(os.path.join(folder, "metadata.json"), "w", encoding="utf-8") as f:
-                json.dump(metadata, f, indent=4, ensure_ascii=False)
+                # Commenti
+                t3 = time.time()
+                try:
+                    comment_blocks = await post_page.query_selector_all("ul ul span")
+                    comments = [await el.inner_text() for el in comment_blocks if await el.inner_text() != caption]
+                except:
+                    comments = []
+                comment_count = len(comments)
+                print(f"⏱️ Tempo per commenti: {time.time() - t3:.2f}s")
 
-            print(f"✅ Post {idx+1} salvato")
+                # Tipo
+                try:
+                    if "/reel/" in link:
+                        post_type = "reel"
+                    else:
+                        # Conta quanti media ci sono nel post (img o video dentro <ul><li>)
+                        items = await post_page.query_selector_all("ul > li div img, ul > li div video")
+                        post_type = "carousel" if len(items) > 1 else "image"
+                except:
+                    post_type = "unknown"
 
-        await browser.close()
-
-    # Esporta CSV
-    import csv
-    csv_path = os.path.join(BASE_DIR, "posts_summary.csv")
-    with open(csv_path, mode="w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=["url", "caption", "likes", "comments", "data_pubblicazione", "screenshot", "note", "tipo", "engagement_rate"])
-        writer.writeheader()
-
-        for i in range(len(POST_URLS)):
-            meta_path = os.path.join(BASE_DIR, f"post_{i+1}", "metadata.json")
-            if os.path.exists(meta_path):
-                with open(meta_path, encoding="utf-8") as f:
-                    data = json.load(f)
+                # Download video se REEL
+                if post_type == "reel":
                     try:
-                        likes = int(data.get("likes", "0"))
-                        comments = int(data.get("comments", "0"))
-                        engagement = likes + comments
-                    except:
-                        engagement = "error"
-                    data["engagement_rate"] = engagement
-                    writer.writerow(data)
+                        ld_json_tags = await post_page.query_selector_all('script[type="application/ld+json"]')
+                        for tag in ld_json_tags:
+                            content = await tag.inner_text()
+                            if "VideoObject" in content and "contentUrl" in content:
+                                try:
+                                    data = json.loads(content)
+                                    if isinstance(data, dict) and "contentUrl" in data:
+                                        video_url = data["contentUrl"]
+                                        print(f"🎯 Video URL trovato da ld+json: {video_url}")
+                                        video_resp = requests.get(video_url, headers={"User-Agent": "Mozilla/5.0"})
+                                        if video_resp.status_code == 200:
+                                            if not os.path.exists(video_path):  # evita duplicati
+                                                with open(video_path, "wb") as f:
+                                                    f.write(video_resp.content)
+                                            print(f"📥 Video scaricato da JSON ld+json: {video_path}")
+                                        break
+                                except Exception as json_err:
+                                    print(f"⚠️ Errore parsing JSON ld+json: {json_err}")
+                    except Exception as e:
+                        print(f"⚠️ Errore cercando video in script ld+json: {e}")
 
-    print(f"📄 File CSV esportato in: {csv_path}")
+                    try:
+                        video_element = await post_page.query_selector("video")
+                        if video_element:
+                            video_src = await video_element.get_attribute("src")
+                            if video_src:
+                                if video_src.startswith("blob:"):
+                                    print("🔄 Tentativo di estrarre blob con Playwright handle...")
+                                    try:
+                                        video_data = await post_page.evaluate_handle("""
+                                            async () => {
+                                                try {
+                                                    const video = document.querySelector("video");
+                                                    if (!video || !video.src) return null;
+                                                    const res = await fetch(video.src);
+                                                    if (!res.ok) throw new Error("Fetch failed");
+                                                    const buf = await res.arrayBuffer();
+                                                    return [...new Uint8Array(buf)];
+                                                } catch (e) {
+                                                    console.error("JS Fetch failed:", e);
+                                                    return null;
+                                                }
+                                            }
+                                        """)
+                                        buffer = await video_data.json_value()
+                                        if buffer:
+                                            if not os.path.exists(video_path):  # evita duplicati
+                                                with open(video_path, "wb") as f:
+                                                    f.write(bytes(buffer))
+                                            print(f"📥 Video estratto da blob e salvato: {video_path}")
+                                        else:
+                                            print("❌ Nessun dato ottenuto dal blob video.")
+                                    except Exception as e:
+                                        print(f"❌ Errore estraendo video blob via handle: {e}")
+                                else:
+                                    video_resp = requests.get(video_src, headers={"User-Agent": "Mozilla/5.0"})
+                                    if video_resp.status_code == 200:
+                                        if not os.path.exists(video_path):  # evita duplicati
+                                            with open(video_path, "wb") as f:
+                                                f.write(video_resp.content)
+                                        print(f"📥 Video scaricato direttamente da src: {video_path}")
+                    except Exception as e:
+                        print(f"❌ Errore estraendo video da tag <video>: {e}")
+
+                if not video_path:
+                    print("⚠️ Nessun video scaricato. Skipping fallback.")
+
+                # Screenshot
+                t4 = time.time()
+                screenshot_path = f"{output_dir}/post_{i+1}.png"
+                await post_page.screenshot(path=screenshot_path)
+                print(f"⏱️ Tempo per screenshot: {time.time() - t4:.2f}s")
+
+                # Salva HTML della pagina per debug
+                with open(f"{output_dir}/post_{i+1}.html", "w", encoding="utf-8") as f:
+                    f.write(await post_page.content())
+
+                post_info = {
+                    "link": link,
+                    "caption": caption,
+                    "text": post_text,
+                    "date": post_date,
+                    "likes": likes,
+                    "comments": comments,
+                    "comment_count": comment_count,
+                    "type": post_type,
+                    "screenshot": screenshot_path,
+                    "followers": followers,
+                    "total_posts_on_profile": total_posts,
+                }
+                print(f"🔍 Tipo post rilevato: {post_type}")
+                posts_data.append(post_info)
+
+                print(f"⏱️ Tempo totale per post {i+1}: {time.time() - start_time:.2f}s")
+
+            except PlaywrightTimeout:
+                print(f"⚠️ Timeout su {link}, post saltato")
+                video_path = ""
+                post_info = {
+                    "link": link,
+                    "caption": "",
+                    "text": "",
+                    "date": "",
+                    "likes": 0,
+                    "comments": [],
+                    "comment_count": 0,
+                    "type": "unknown",
+                    "screenshot": "",
+                    "followers": followers,
+                    "total_posts_on_profile": total_posts,
+                }
+                posts_data.append(post_info)
+                continue
+
+        await post_page.close()
+
+        # Save metadata
+        with open(f"{output_dir}/metadata.json", "w") as f:
+            json.dump(posts_data, f, indent=2, ensure_ascii=False)
+
+        # Save CSV
+        df = pd.DataFrame(posts_data)
+        df.to_csv(f"{output_dir}/posts.csv", index=False)
+
+        await context.close()
+        await browser.close()
