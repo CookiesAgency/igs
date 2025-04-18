@@ -1,0 +1,23 @@
+{
+  "name": "igs",
+  "version": "1.0.0",
+  "description": "Uno strumento completo per analizzare post Instagram, fare scraping e scaricare screenshot delle creatività (immagini, caroselli, reel) con ritaglio automatico.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CookiesAgency/IGS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/CookiesAgency/IGS/issues"
+  },
+  "homepage": "https://github.com/CookiesAgency/IGS#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}
