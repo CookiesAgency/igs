@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: igs
+    env: python
+    buildCommand: |
+      pip install -r requirements.txt
+      npm install
+      npx playwright install --with-deps
+    startCommand: streamlit run streamlit_app.py
+    buildFilter:
+      paths:
+        - package.json
+        - requirements.txt
+        - build.sh
+        - streamlit_app.py
+
+        
