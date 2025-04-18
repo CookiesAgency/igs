@@ -7,7 +7,11 @@ def screenshot_images_from_post_url(post_url, image_dir, filename_prefix, profil
     image_paths = []
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            is_render = os.environ.get("RENDER", "false").lower() == "true"
+            if is_render:
+                browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            else:
+                browser = p.chromium.launch(headless=False, channel="chrome")
             context = browser.new_context(storage_state="playwright_sessions/IGS_profile/state.json")
             page = context.new_page()
 
