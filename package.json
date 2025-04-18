@@ -19,5 +19,8 @@
   "homepage": "https://github.com/CookiesAgency/IGS#readme",
   "devDependencies": {
     "@playwright/test": "^1.52.0"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
   }
 }
