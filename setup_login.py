@@ -20,11 +20,20 @@ def inizializza_sessione_instagram(profile_name, timeout=60):
         os.remove(state_path)
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            headless=False,
-            channel="chrome"
-        )
+        is_render = os.environ.get("RENDER", "false").lower() == "true"
+        
+        if is_render:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                headless=True,
+                args=["--no-sandbox"]
+            )
+        else:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                headless=False,
+                channel="chrome"
+            )
         print("\n🟢 Chrome avviato con profilo persistente")
         print("👉 Effettua il login manualmente su Instagram nella finestra aperta")
         print("   e poi CHIUDI la finestra quando hai terminato.\n")
