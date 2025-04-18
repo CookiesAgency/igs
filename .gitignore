@@ -184,3 +184,5 @@ start.sh
 # Cartelle personali di backup
 data/
 Backup*/
+
+node_modules/
