@@ -13,7 +13,7 @@ async def scrape_posts_by_url(profile_name, profile_url, num_posts, session_name
     os.makedirs(output_dir, exist_ok=True)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(channel="chrome", headless=False, args=["--autoplay-policy=no-user-gesture-required"])
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--autoplay-policy=no-user-gesture-required"])
 
         # Persistente sessione utente (salva cookies e login)
         user_data_dir = os.path.join(".auth", session_name)
